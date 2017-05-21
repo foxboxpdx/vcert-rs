@@ -1,28 +1,31 @@
 // Define a struct and implement functions on it for making various API calls
 // to the Venafi TPP.
+extern crate serde;
+extern crate serde_json;
 use hyper::Client;
 use hyper::client::Response;
 use hyper::header::*;
 use hyper::mime::Mime;
-use serde_json::Value;
+use serde_json::{Value, Map};
 use types::*;
 use std::collections::HashMap;
+use std::io::Read;
 
 pub struct VenafiAPI {
     username: String,
     password: String,
     hostname: String,
     apikey: String,
-    cadns: HashMap<String, String>,
-    folders: HashMap<String, String>
+    pub cadns: HashMap<String, String>,
+    pub folders: HashMap<String, String>
 }
 
 impl VenafiAPI {
     pub fn new(u: &str, p: &str, h: &str) -> VenafiAPI {
-        VenafiAPI { username: u.to_string().
+        VenafiAPI { username: u.to_string(),
                     password: p.to_string(),
                     hostname: h.to_string(),
-                    apikey: "",
+                    apikey: String::new(),
                     cadns: HashMap::new(),
                     folders: HashMap::new() }
     }
@@ -47,13 +50,13 @@ impl VenafiAPI {
     pub fn set_headers(&self) -> Headers {
         let mut headers = Headers::new();
         headers.set(ContentType::json());
-        headers.set_raw("X-Venafi-Api-Key", self.apikey.as_str());
+        headers.set_raw("X-Venafi-Api-Key", vec!(self.apikey.clone().into_bytes()));
         headers
     }
 
     // Call /Authorize/ and obtain an API key
     // This is the only REST call that won't use self.post()
-    pub fn authenticate(&self) -> bool {
+    pub fn authenticate(&mut self) -> bool {
         let mut payload = HashMap::new();
         payload.insert("Username", self.username.as_str());
         payload.insert("Password", self.password.as_str());
@@ -63,11 +66,12 @@ impl VenafiAPI {
         let mut headers = Headers::new();
         headers.set(ContentType::json());
         match client.post(&uri).body(&body).headers(headers).send() {
-            Ok(res) => {
+            Ok(mut res) => {
                 let mut body = String::new();
                 res.read_to_string(&mut body).expect("Error reading response");
                 let parsed: Value = serde_json::from_str(body.as_str()).expect("Can't parse response");
-                self.apikey = parsed["APIKey"];
+                let key: String = parsed["APIKey"].as_str().unwrap().to_string();
+                self.apikey = key;
                 true
             }
             Err(e) => {
@@ -118,7 +122,7 @@ impl VenafiAPI {
     // Request a new certificate.  Takes a subject, san list (can be empty),
     // name of a certificate authority, and name of a folder/policydn
     pub fn request_certificate(&self, sub: &str, san: &[String], ca: &str, f: &str) -> bool {
-        let mut payload = HashMap::new();
+        let mut payload = Map::new();
         // Sanity check CA and folder names
         if !self.cadns.contains_key(ca) {
             println!("No CA DN found for CA name {}", ca);
@@ -128,27 +132,29 @@ impl VenafiAPI {
             println!("No policy DN found for folder name {}", f);
             return false
         }
-        payload.insert("PolicyDN", self.folders.get(f).unwrap());
-        payload.insert("CADN", self.cadns.get(ca).unwrap());
-        // Need a better place to specify this thing
-        let mut casahash = HashMap::new();
-        casahash.insert("Name", "Validity Period");
-        casahash.insert("Value", "365");
-        let casavec = vec![casahash];
-        payload.insert("CASpecificAttributes", casavec);
-        // That's some ugly crap there
-        payload.insert("Subject", sub);
+        payload.insert("PolicyDN".to_string(), 
+                       Value::String(self.folders.get(f).unwrap().to_owned()));
+        payload.insert("CADN".to_string(), 
+                       Value::String(self.cadns.get(ca).unwrap().to_owned()));
+        let mut casahash = Map::new();
+        casahash.insert("Name".to_string(), 
+                        Value::String("Validity Period".to_string()));
+        casahash.insert("Value".to_string(), 
+                        Value::String("365".to_string()));
+        payload.insert("CASpecificAttributes".to_string(), 
+                       Value::Array(vec![Value::Object(casahash)]));
+        payload.insert("Subject".to_string(), 
+                       Value::String(sub.to_string()));
 
-        // Man there's a lot of awful anonymous hash arrays in this payload.
-        // Kind of a pain to implement in Rust...
         let mut sans = Vec::new();
-        while let Some(s) = san.pop() {
-            let tn: HashMap<&str, &str> =
-                [("Type","2"),("Name",s)].iter().cloned().collect();
-            sans.push(tn);
+        for s in san {
+            let mut tn = Map::new();
+            tn.insert("Type".to_string(), Value::String("2".to_string()));
+            tn.insert("Name".to_string(), Value::String(s.to_string()));
+            sans.push(Value::Object(tn));
         }
         if sans.len() > 1 {
-            payload.insert("SubjectAltNames", sans);
+            payload.insert("SubjectAltNames".to_string(), Value::Array(sans));
         }
 
         let mut result = self.post("/Certificates/Request", &payload);
@@ -175,7 +181,7 @@ impl VenafiAPI {
     pub fn renew_certificate(&self, dn: &str) -> bool {
         let mut payload = HashMap::new();
         payload.insert("CertificateDN", &dn);
-        result = self.post("/Certificates/Renew", payload);
+        let mut result = self.post("/Certificates/Renew", &payload);
         if result.status.is_success() {
             println!("Successfully submitted renewal request for {}", dn);
             true
@@ -191,10 +197,10 @@ impl VenafiAPI {
     // Send a revoke request given the DN of a certificate
     pub fn revoke_certificate(&self, dn: &str) -> bool {
         let mut payload = HashMap::new();
-        payload.insert("CertificateDN", &dn);
+        payload.insert("CertificateDN", dn);
         payload.insert("Reason", "5");
         payload.insert("Comments", "Revoked via API");
-        result = self.post("/Certificates/Revoke", payload);
+        let mut result = self.post("/Certificates/Revoke", &payload);
         if result.status.is_success() {
             println!("Successfully submitted revoke request for {}", dn);
             true
@@ -202,7 +208,7 @@ impl VenafiAPI {
             let stat = result.status;
             let mut why = String::new();
             result.read_to_string(&mut why).expect("Can't read response?");
-            println("Received error {}: {:?}", stat, why);
+            println!("Received error {}: {:?}", stat, why);
             false
         }
     }
