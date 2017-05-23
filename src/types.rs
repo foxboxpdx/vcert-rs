@@ -1,7 +1,6 @@
 // types.rs
 // Define structs for Serde to serialize/deserialize from representing
 // some of the more common pieces of data we'll encounter with Venafi
-use std::collections::HashMap;
 
 // JSON-defined list of certificates
 #[derive(Deserialize)]

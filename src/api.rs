@@ -5,11 +5,14 @@ extern crate serde_json;
 use hyper::Client;
 use hyper::client::Response;
 use hyper::header::*;
-use hyper::mime::Mime;
 use serde_json::{Value, Map};
 use types::*;
 use std::collections::HashMap;
 use std::io::Read;
+use base64::decode;
+use utils;
+use openssl::pkcs12::Pkcs12;
+use time;
 
 pub struct VenafiAPI {
     username: String,
@@ -96,27 +99,72 @@ impl VenafiAPI {
         // Iterate through FOOC.objects vector
         // Grab DN and Name attributes, stick in HashMap
         // return hashmap
+        let mut payload = HashMap::new();
+        payload.insert("Class", "X509 Server Certificate");
+        payload.insert("Recursive", "1");
+        let mut result = self.post("/Config/FindObjectsOfClass", &payload);
+        // Result should be able to be turned into a FOOC struct
+        // Sanity check the result and return an empty HashMap on error
+        if !result.status.is_success() {
+            let stat = result.status;
+            let mut why = String::new();
+            result.read_to_string(&mut why).expect("Can't read response?!");
+            println!("Received error {}: {:?}", stat, why);
+            return HashMap::new()
+        }
+        let mut body = String::new();
+        result.read_to_string(&mut body).expect("Error reading response");
+        let parsed: FOOC = serde_json::from_str(&body).expect("Error converting JSON");
         let mut retval = HashMap::new();
+        for x in &parsed.objects {
+            retval.insert(x.dn.clone(), x.name.clone());
+        }
         retval
     }
 
     // Attempt to retrieve a PKCS#12 certificate with random password.
-    pub fn fetch_certificate(&self, dn: &str) -> Vec<&str> {
+    pub fn fetch_certificate(&self, dn: &str) -> Vec<String> {
         // Generate password string
+        let pass = utils::generate_pass();
         // Construct payload: CertificateDN, Format, IncludeChain,
         // IncludePrivateKey, Password.
+        let mut payload = HashMap::new();
+        payload.insert("CertificateDN", dn);
+        payload.insert("Format", "PKCS #12");
+        payload.insert("IncludeChain", "1");
+        payload.insert("IncludePrivateKey", "1");
+        payload.insert("Password", &pass);
         // Post to /certificates/Retrieve
+        let mut result = self.post("/certificates/Retrieve", &payload);
+        if !result.status.is_success() {
+            let stat = result.status;
+            let mut why = String::new();
+            result.read_to_string(&mut why).expect("Can't read response?!");
+            println!("Received error {}: {:?}", stat, why);
+            return Vec::new()
+        }
+        let mut body = String::new();
+        result.read_to_string(&mut body).expect("Error reading response");
+        let parsed: RetrievedCert = serde_json::from_str(&body).expect("Error converting JSON");
         // Parse out RetrievedCert struct and data attribute
         // Base64 decode it?
+        let decoded = decode(&parsed.data).expect("Unable to base64 decode");
         // Return a vector of the cert string and password string
-        let mut retval = Vec::new();
+        let retval = vec![String::from_utf8(decoded).unwrap(), pass.clone()];
         retval
     }
 
     // Fetch the cert and extract the 'not_after' attribute.  Need to look
     // up how to manipulate OpenSSL structs.
-    pub fn fetch_expiry(&self, dn: &str) -> bool {
-        true
+    pub fn fetch_expiry(&self, dn: &str) -> i64 {
+        // Grab the cert/pass using fetch_certificate
+        let bits = self.fetch_certificate(dn);
+        let p12 = Pkcs12::from_der(&bits[0].as_bytes()).expect("Bad p12?");
+        let parsed = p12.parse(&bits[1]).expect("Bad password?");
+        let notafter: String = format!("{}", parsed.cert.not_after());
+        let t = time::strptime(&notafter, "%b %d %T %Y %Z").expect("Invalid time format");
+        let diff = t - time::now();
+        diff.num_days()
     }
 
     // Request a new certificate.  Takes a subject, san list (can be empty),

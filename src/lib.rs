@@ -9,6 +9,9 @@ extern crate core;
 extern crate serde_json;
 extern crate rand;
 extern crate regex;
+extern crate base64;
+extern crate openssl;
+extern crate time;
 
 // Local modules
 pub mod types;
