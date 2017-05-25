@@ -76,4 +76,14 @@ pub struct TypedNameValue {
     pub value: String
 }
 
+// Data returned by a call to /Config/Read
+#[derive(Deserialize)]
+pub struct ConfigRead {
+    #[serde(rename="ObjectDN")]
+    pub objectdn: String,
+    #[serde(rename="AttributeName")]
+    pub attribute: String,
+    #[serde(rename="Values")]
+    pub values: Vec<String>
+}
 

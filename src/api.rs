@@ -105,11 +105,7 @@ impl VenafiAPI {
         let mut result = self.post("/Config/FindObjectsOfClass", &payload);
         // Result should be able to be turned into a FOOC struct
         // Sanity check the result and return an empty HashMap on error
-        if !result.status.is_success() {
-            let stat = result.status;
-            let mut why = String::new();
-            result.read_to_string(&mut why).expect("Can't read response?!");
-            println!("Received error {}: {:?}", stat, why);
+        if !self.validate_result(&mut result) {
             return HashMap::new()
         }
         let mut body = String::new();
@@ -136,11 +132,7 @@ impl VenafiAPI {
         payload.insert("Password", &pass);
         // Post to /certificates/Retrieve
         let mut result = self.post("/certificates/Retrieve", &payload);
-        if !result.status.is_success() {
-            let stat = result.status;
-            let mut why = String::new();
-            result.read_to_string(&mut why).expect("Can't read response?!");
-            println!("Received error {}: {:?}", stat, why);
+        if !self.validate_result(&mut result) {
             return Vec::new()
         }
         let mut body = String::new();
@@ -206,14 +198,10 @@ impl VenafiAPI {
         }
 
         let mut result = self.post("/Certificates/Request", &payload);
-        if result.status.is_success() {
+        if self.validate_result(&mut result) {
             println!("Successfully requested {}", sub);
             true
         } else {
-            let stat = result.status;
-            let mut why = String::new();
-            result.read_to_string(&mut why).expect("Can't read response?!");
-            println!("Received error {}: {:?}", stat, why);
             false
         }
     }
@@ -221,8 +209,38 @@ impl VenafiAPI {
     // Do a request but with a CSR instead of subj/san.  Takes a name, csr,
     // cert authority, and folder name
     pub fn request_with_csr(&self, name: &str, csr: &str, ca: &str, f: &str) -> bool {
-        // bluh
-        true
+        let mut payload = Map::new();
+        // Sanity check CA and folder names
+        if !self.cadns.contains_key(ca) {
+            println!("No CA DN found for CA name {}", ca);
+            return false
+        }
+        if !self.folders.contains_key(f) {
+            println!("No policy DN found for folder name {}", f);
+            return false
+        }
+        payload.insert("PolicyDN".to_string(),
+                       Value::String(self.folders.get(f).unwrap().to_owned()));
+        payload.insert("CADN".to_string(),
+                       Value::String(self.cadns.get(ca).unwrap().to_owned()));
+        let mut casahash = Map::new();
+        casahash.insert("Name".to_string(),
+                        Value::String("Validity Period".to_string()));
+        casahash.insert("Value".to_string(),
+                        Value::String("365".to_string()));
+        payload.insert("CASpecificAttributes".to_string(),
+                       Value::Array(vec![Value::Object(casahash)]));
+        payload.insert("ObjectName".to_string(),
+                       Value::String(name.to_string()));
+        payload.insert("PKCS10".to_string(),
+                       Value::String(csr.to_string()));
+        let mut result = self.post("/Certificates/Request", &payload);
+        if self.validate_result(&mut result) {
+            println!("Successfully requested {}", name);
+            true
+        } else {
+            false
+        }
     }
 
     // Send a renewal request given the DN of a certificate
@@ -230,14 +248,10 @@ impl VenafiAPI {
         let mut payload = HashMap::new();
         payload.insert("CertificateDN", &dn);
         let mut result = self.post("/Certificates/Renew", &payload);
-        if result.status.is_success() {
+        if self.validate_result(&mut result) {
             println!("Successfully submitted renewal request for {}", dn);
             true
         } else {
-            let stat = result.status;
-            let mut why = String::new();
-            result.read_to_string(&mut why).expect("Can't read response?!");
-            println!("Received error {}: {:?}", stat, why);
             false
         }
     }
@@ -249,15 +263,11 @@ impl VenafiAPI {
         payload.insert("Reason", "5");
         payload.insert("Comments", "Revoked via API");
         let mut result = self.post("/Certificates/Revoke", &payload);
-        if result.status.is_success() {
+        if self.validate_result(&mut result) {
             println!("Successfully submitted revoke request for {}", dn);
             true
         } else {
-            let stat = result.status;
-            let mut why = String::new();
-            result.read_to_string(&mut why).expect("Can't read response?");
-            println!("Received error {}: {:?}", stat, why);
-            false
+            return false
         }
     }
 
@@ -268,6 +278,47 @@ impl VenafiAPI {
         // 2. Obtain cert metadata via /X509CertificateStore/Retrieve
         // If the array TypedNameValues contains a hash with the name
         // 'Revocation Status' and a non-null value, certificate is revoked.
-        true
+        let mut payload = HashMap::new();
+        payload.insert("ObjectDN", dn);
+        payload.insert("AttributeName", "Certificate Vault Id");
+        let mut result = self.post("/Config/Read", &payload);
+        if !self.validate_result(&mut result) {
+            return false
+        }
+        let mut body = String::new();
+        result.read_to_string(&mut body).expect("Error reading response");
+        let mut parsed: ConfigRead = serde_json::from_str(&body).expect("Error converting JSON");
+        let vault_id = parsed.values.pop().unwrap();
+
+        let mut p2 = HashMap::new();
+        p2.insert("VaultId", vault_id.as_str());
+        result = self.post("/X509CertificateStore/Retreive", &p2);
+        if !self.validate_result(&mut result) {
+            return false
+        }
+        body = String::new();
+        result.read_to_string(&mut body).expect("Error reading response");
+        let daters: X509CertStore = serde_json::from_str(&body).expect("Error converting JSON");
+        for t in &daters.typednamevalues {
+            if t.name == "Revocation Status" && !t.value.is_empty() {
+                return true
+            }
+        }
+        false
+    }
+
+    // This code kept getting repeated so lets factor it out to its own fn.
+    fn validate_result(&self, res: &mut Response) -> bool {
+        // Return true if status is successful, print error and return false
+        // otherwise.
+        if res.status.is_success() {
+            true
+        } else {
+            let stat = res.status;
+            let mut why = String::new();
+            res.read_to_string(&mut why).expect("Can't read response?");
+            println!("Received error {}: {:?}", stat, why);
+            false
+        }
     }
 }
