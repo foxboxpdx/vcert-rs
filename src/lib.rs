@@ -4,6 +4,7 @@
 
 // External imports
 extern crate hyper;
+extern crate hyper_native_tls;
 extern crate serde;
 extern crate core;
 extern crate serde_json;

@@ -3,6 +3,8 @@
 extern crate serde;
 extern crate serde_json;
 use hyper::Client;
+use hyper::net::HttpsConnector;
+use hyper_native_tls::NativeTlsClient;
 use hyper::client::Response;
 use hyper::header::*;
 use serde_json::{Value, Map};
@@ -14,6 +16,7 @@ use utils;
 use openssl::pkcs12::Pkcs12;
 use time;
 
+#[derive(Debug)]
 pub struct VenafiAPI {
     username: String,
     password: String,
@@ -35,7 +38,9 @@ impl VenafiAPI {
 
     // Define our own reusable GET/POST functions
     pub fn get(&self, uri: &str) -> Response {
-        let client = Client::new();
+        let ssl = NativeTlsClient::new().unwrap();
+        let connector = HttpsConnector::new(ssl);
+        let client = Client::with_connector(connector);
         let full_uri = self.hostname.clone() + uri;
         let headers = self.set_headers();
         client.get(&full_uri).headers(headers).send().unwrap()
@@ -43,7 +48,9 @@ impl VenafiAPI {
 
     pub fn post<'a, T>(&self, uri: &str, payload: &T) -> Response where T: serde::Serialize {
         let body = serde_json::to_string(&payload).unwrap();
-        let client = Client::new();
+        let ssl = NativeTlsClient::new().unwrap();
+        let connector = HttpsConnector::new(ssl);
+        let client = Client::with_connector(connector);
         let full_uri = self.hostname.clone() + uri;
         let headers = self.set_headers();
         client.post(&full_uri).body(&body).headers(headers).send().unwrap()
@@ -65,7 +72,10 @@ impl VenafiAPI {
         payload.insert("Password", self.password.as_str());
         let body = serde_json::to_string(&payload).unwrap();
         let uri = self.hostname.clone() + "/Authorize/";
-        let client = Client::new();
+        let ssl = NativeTlsClient::new().unwrap();
+        let connector = HttpsConnector::new(ssl);
+        let client = Client::with_connector(connector);
+        //let client = Client::new();
         let mut headers = Headers::new();
         headers.set(ContentType::json());
         match client.post(&uri).body(&body).headers(headers).send() {
@@ -82,12 +92,6 @@ impl VenafiAPI {
                 false
             }
         }
-    }
-
-    // Need to figure out some better way of doing this - maybe folder should 
-    // be static, defined in a conf file of some sort with the CADNs?
-    pub fn find_folders(&self) -> bool {
-        true
     }
 
     // Retrieve metadata for X509 Server Certificate objects available to the
@@ -119,7 +123,7 @@ impl VenafiAPI {
     }
 
     // Attempt to retrieve a PKCS#12 certificate with random password.
-    pub fn fetch_certificate(&self, dn: &str) -> Vec<String> {
+    pub fn fetch_certificate(&self, dn: &str) -> P12Bundle {
         // Generate password string
         let pass = utils::generate_pass();
         // Construct payload: CertificateDN, Format, IncludeChain,
@@ -133,7 +137,7 @@ impl VenafiAPI {
         // Post to /certificates/Retrieve
         let mut result = self.post("/certificates/Retrieve", &payload);
         if !self.validate_result(&mut result) {
-            return Vec::new()
+            panic!("Certificate cannot be retrieved");
         }
         let mut body = String::new();
         result.read_to_string(&mut body).expect("Error reading response");
@@ -141,8 +145,8 @@ impl VenafiAPI {
         // Parse out RetrievedCert struct and data attribute
         // Base64 decode it?
         let decoded = decode(&parsed.data).expect("Unable to base64 decode");
-        // Return a vector of the cert string and password string
-        let retval = vec![String::from_utf8(decoded).unwrap(), pass.clone()];
+        let pk12 = Pkcs12::from_der(&decoded).expect("Bad p12?");
+        let retval = P12Bundle { p12: pk12, pwd: pass.clone() };
         retval
     }
 
@@ -150,10 +154,9 @@ impl VenafiAPI {
     // up how to manipulate OpenSSL structs.
     pub fn fetch_expiry(&self, dn: &str) -> i64 {
         // Grab the cert/pass using fetch_certificate
-        let bits = self.fetch_certificate(dn);
-        let p12 = Pkcs12::from_der(&bits[0].as_bytes()).expect("Bad p12?");
-        let parsed = p12.parse(&bits[1]).expect("Bad password?");
-        let notafter: String = format!("{}", parsed.cert.not_after());
+        let certdata = self.fetch_certificate(dn);
+        let parsed = certdata.p12.parse(&certdata.pwd).expect("Bad password?");
+        let notafter: String = format!("{}", &parsed.cert.not_after());
         let t = time::strptime(&notafter, "%b %d %T %Y %Z").expect("Invalid time format");
         let diff = t - time::now();
         diff.num_days()

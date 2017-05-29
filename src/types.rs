@@ -1,6 +1,23 @@
 // types.rs
 // Define structs for Serde to serialize/deserialize from representing
 // some of the more common pieces of data we'll encounter with Venafi
+use std::collections::HashMap;
+use openssl::pkcs12::Pkcs12;
+
+// JSON-based config file containing folder and cert authority names
+#[derive(Deserialize)]
+pub struct ZerdaConfig {
+    pub kind: String,
+    pub folders: HashMap<String, String>,
+    pub certauthorities: HashMap<String, String>
+}
+
+// I'm way too lazy to deal with figuring out a way to return a P12 and its
+// password as a vector or hashmap or something sane so eff it here's a struct.
+pub struct P12Bundle {
+    pub p12: Pkcs12,
+    pub pwd: String
+}
 
 // JSON-defined list of certificates
 #[derive(Deserialize)]
@@ -25,7 +42,7 @@ pub struct FOOC {
     #[serde(rename="Objects")]
     pub objects: Vec<ClassObject>,
     #[serde(rename="Result")]
-    pub result: String
+    pub result: i32
 }
 
 #[derive(Deserialize)]

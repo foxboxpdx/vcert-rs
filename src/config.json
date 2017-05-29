@@ -1,0 +1,13 @@
+{
+  "kind" : "zerda:VenafiConfig:v1",
+  "folders" : 
+    {
+      "internal" : "\\VED\\Policy\\Certificates\\Internal\\",
+      "external" : "\\VED\\Policy\\Certificates\\External\\"
+    },
+  "certauthorities" : 
+    {
+      "myca" : "\\VED\\Policy\\Certificate Authorities\\My CA"
+    }
+}
+
