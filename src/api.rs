@@ -7,7 +7,7 @@ use hyper::net::HttpsConnector;
 use hyper_native_tls::NativeTlsClient;
 use hyper::client::Response;
 use hyper::header::*;
-use serde_json::{Value, Map};
+use serde_json::Value;
 use types::*;
 use std::collections::HashMap;
 use std::io::Read;
@@ -165,7 +165,6 @@ impl VenafiAPI {
     // Request a new certificate.  Takes a subject, san list (can be empty),
     // name of a certificate authority, and name of a folder/policydn
     pub fn request_certificate(&self, sub: &str, san: &[String], ca: &str, f: &str) -> bool {
-        let mut payload = Map::new();
         // Sanity check CA and folder names
         if !self.cadns.contains_key(ca) {
             println!("No CA DN found for CA name {}", ca);
@@ -175,29 +174,35 @@ impl VenafiAPI {
             println!("No policy DN found for folder name {}", f);
             return false
         }
-        payload.insert("PolicyDN".to_string(), 
-                       Value::String(self.folders.get(f).unwrap().to_owned()));
-        payload.insert("CADN".to_string(), 
-                       Value::String(self.cadns.get(ca).unwrap().to_owned()));
-        let mut casahash = Map::new();
-        casahash.insert("Name".to_string(), 
-                        Value::String("Validity Period".to_string()));
-        casahash.insert("Value".to_string(), 
-                        Value::String("365".to_string()));
-        payload.insert("CASpecificAttributes".to_string(), 
-                       Value::Array(vec![Value::Object(casahash)]));
-        payload.insert("Subject".to_string(), 
-                       Value::String(sub.to_string()));
+        // Prep CASpecificAttributes hashmap
+        let csa: HashMap<String, String> = 
+            [("Name".to_string(), "Validity Period".to_string()),
+             ("Value".to_string(), "365".to_string())]
+            .iter().cloned().collect();
+        let mut csav = Vec::new();
+        csav.push(csa);
 
+        // Create a CertificateRequest struct with our available data
+        let mut payload = CertificateRequest {
+            policydn:   self.folders.get(f).unwrap().to_owned(),
+            cadn:       self.cadns.get(ca).unwrap().to_owned(),
+            specific:   csav,
+            subject:    Some(sub.to_string()),
+            objectname: None,
+            pkcs10:     None,
+            san:        None,
+        };
         let mut sans = Vec::new();
         for s in san {
-            let mut tn = Map::new();
-            tn.insert("Type".to_string(), Value::String("2".to_string()));
-            tn.insert("Name".to_string(), Value::String(s.to_string()));
-            sans.push(Value::Object(tn));
+            let typename: HashMap<String, String> =
+                [("Type".to_string(), "2".to_string()),
+                 ("Name".to_string(), s.to_string())]
+                .iter().cloned().collect();
+            sans.push(typename);
         }
+        // Stuff into payload if needed
         if sans.len() > 1 {
-            payload.insert("SubjectAltNames".to_string(), Value::Array(sans));
+            payload.san = Some(sans);
         }
 
         let mut result = self.post("/Certificates/Request", &payload);
@@ -212,7 +217,6 @@ impl VenafiAPI {
     // Do a request but with a CSR instead of subj/san.  Takes a name, csr,
     // cert authority, and folder name
     pub fn request_with_csr(&self, name: &str, csr: &str, ca: &str, f: &str) -> bool {
-        let mut payload = Map::new();
         // Sanity check CA and folder names
         if !self.cadns.contains_key(ca) {
             println!("No CA DN found for CA name {}", ca);
@@ -222,21 +226,24 @@ impl VenafiAPI {
             println!("No policy DN found for folder name {}", f);
             return false
         }
-        payload.insert("PolicyDN".to_string(),
-                       Value::String(self.folders.get(f).unwrap().to_owned()));
-        payload.insert("CADN".to_string(),
-                       Value::String(self.cadns.get(ca).unwrap().to_owned()));
-        let mut casahash = Map::new();
-        casahash.insert("Name".to_string(),
-                        Value::String("Validity Period".to_string()));
-        casahash.insert("Value".to_string(),
-                        Value::String("365".to_string()));
-        payload.insert("CASpecificAttributes".to_string(),
-                       Value::Array(vec![Value::Object(casahash)]));
-        payload.insert("ObjectName".to_string(),
-                       Value::String(name.to_string()));
-        payload.insert("PKCS10".to_string(),
-                       Value::String(csr.to_string()));
+        // Prep CASpecificAttributes hashmap
+        let csa: HashMap<String, String> =
+            [("Name".to_string(), "Validity Period".to_string()),
+             ("Value".to_string(), "365".to_string())]
+            .iter().cloned().collect();
+        let mut csav = Vec::new();
+        csav.push(csa);
+
+        // Create a CertificateRequest struct with available data
+        let payload = CertificateRequest {
+            policydn:   self.folders.get(f).unwrap().to_owned(),
+            cadn:       self.cadns.get(ca).unwrap().to_owned(),
+            specific:   csav,
+            subject:    None,
+            objectname: Some(name.to_string()),
+            pkcs10:     Some(csr.to_string()),
+            san:        None
+        };
         let mut result = self.post("/Certificates/Request", &payload);
         if self.validate_result(&mut result) {
             println!("Successfully requested {}", name);

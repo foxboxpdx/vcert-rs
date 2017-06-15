@@ -19,6 +19,26 @@ pub struct P12Bundle {
     pub pwd: String
 }
 
+// Outbound certificate request, should support both with and w/o CSR
+// It's either this or that gross serde::json::Map mess
+#[derive(Serialize)]
+pub struct CertificateRequest {
+    #[serde(rename="PolicyDN")]
+    pub policydn: String,
+    #[serde(rename="CADN")]
+    pub cadn: String,
+    #[serde(rename="CASpecificAttributes")]
+    pub specific: Vec<HashMap<String, String>>,
+    #[serde(rename="Subject")]
+    pub subject: Option<String>,
+    #[serde(rename="SubjectAltNames")]
+    pub san: Option<Vec<HashMap<String, String>>>,
+    #[serde(rename="ObjectName")]
+    pub objectname: Option<String>,
+    #[serde(rename="PKCS10")]
+    pub pkcs10: Option<String>
+}
+
 // JSON-defined list of certificates
 #[derive(Deserialize)]
 pub struct CertificateList {
