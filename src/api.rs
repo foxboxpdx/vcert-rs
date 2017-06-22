@@ -22,18 +22,16 @@ pub struct VenafiAPI {
     password: String,
     hostname: String,
     apikey: String,
-    pub cadns: HashMap<String, String>,
-    pub folders: HashMap<String, String>
+    config: ZerdaConfig
 }
 
 impl VenafiAPI {
-    pub fn new(u: &str, p: &str, h: &str) -> VenafiAPI {
+    pub fn new(u: &str, p: &str, h: &str, c: ZerdaConfig) -> VenafiAPI {
         VenafiAPI { username: u.to_string(),
                     password: p.to_string(),
                     hostname: h.to_string(),
                     apikey: String::new(),
-                    cadns: HashMap::new(),
-                    folders: HashMap::new() }
+                    config: c }
     }
 
     // Define our own reusable GET/POST functions
@@ -166,11 +164,11 @@ impl VenafiAPI {
     // name of a certificate authority, and name of a folder/policydn
     pub fn request_certificate(&self, sub: &str, san: &[String], ca: &str, f: &str) -> bool {
         // Sanity check CA and folder names
-        if !self.cadns.contains_key(ca) {
+        if !self.config.certauthorities.contains_key(ca) {
             println!("No CA DN found for CA name {}", ca);
             return false
         }
-        if !self.folders.contains_key(f) {
+        if !self.config.folders.contains_key(f) {
             println!("No policy DN found for folder name {}", f);
             return false
         }
@@ -184,8 +182,8 @@ impl VenafiAPI {
 
         // Create a CertificateRequest struct with our available data
         let mut payload = CertificateRequest {
-            policydn:   self.folders.get(f).unwrap().to_owned(),
-            cadn:       self.cadns.get(ca).unwrap().to_owned(),
+            policydn:   self.config.folders.get(f).unwrap().to_owned(),
+            cadn:       self.config.certauthorities.get(ca).unwrap().to_owned(),
             specific:   csav,
             subject:    Some(sub.to_string()),
             objectname: None,
@@ -218,11 +216,11 @@ impl VenafiAPI {
     // cert authority, and folder name
     pub fn request_with_csr(&self, name: &str, csr: &str, ca: &str, f: &str) -> bool {
         // Sanity check CA and folder names
-        if !self.cadns.contains_key(ca) {
+        if !self.config.certauthorities.contains_key(ca) {
             println!("No CA DN found for CA name {}", ca);
             return false
         }
-        if !self.folders.contains_key(f) {
+        if !self.config.folders.contains_key(f) {
             println!("No policy DN found for folder name {}", f);
             return false
         }
@@ -236,8 +234,8 @@ impl VenafiAPI {
 
         // Create a CertificateRequest struct with available data
         let payload = CertificateRequest {
-            policydn:   self.folders.get(f).unwrap().to_owned(),
-            cadn:       self.cadns.get(ca).unwrap().to_owned(),
+            policydn:   self.config.folders.get(f).unwrap().to_owned(),
+            cadn:       self.config.certauthorities.get(ca).unwrap().to_owned(),
             specific:   csav,
             subject:    None,
             objectname: Some(name.to_string()),
@@ -317,6 +315,61 @@ impl VenafiAPI {
         false
     }
 
+    // Create an F5 LTM Advanced object with supplied base parameters
+    fn create_f5_app(&self, appdn: &str, certdn: &str, name: &str) -> bool {
+        // Build the array of NameAttributes
+        let driver = NameAttrib { name: "Driver Name".to_string(), value: "appf5ltmadvanced".to_string() };
+        let desc   = NameAttrib { name: "Description".to_string(), value: name.to_string() };
+        let cert   = NameAttrib { name: "Certificate".to_string(), value: certdn.to_string() };
+        let prof   = NameAttrib { name: "SSL Profile Name".to_string(), value: name.to_string() };
+        let nal = vec![driver, desc, cert, prof];
+        // Shove it into a CreateAppRequest struct to send off
+        let payload = CreateAppRequest {
+            objectdn: appdn.to_string(),
+            class:    "F5 LTM Advanced".to_string(),
+            nal:      nal
+        };
+        let mut result = self.post("/Config/Create", &payload);
+        if !self.validate_result(&mut result) {
+            return false
+        }
+        true
+    }
+
+    // Set additional parameters on an application object
+    fn add_app_params(&self, appdn: &str, params: &HashMap<String, String>) -> bool {
+        // Iterate through the params hash and call AddValue for each
+        for (k, v) in params {
+            let mut payload = HashMap::new();
+            payload.insert("ObjectDN", appdn);
+            payload.insert("AttributeName", k);
+            payload.insert("Value", v);
+            let mut result = self.post("/Config/AddValue", &payload);
+            if !self.validate_result(&mut result) {
+                return false
+            }
+        }
+        true
+    }
+
+    // Trigger a provisioning action on an application object
+    fn execute_app(&self, appdn: &str) -> bool {
+        // Need a vec
+        let values = vec![ "1".to_string() ];
+        // Need a request
+        let payload = WriteDNRequest {
+            objectdn: appdn.to_string(),
+            attrib: "Provisioning Work To Do".to_string(),
+            values: values
+        };
+        // Send it
+        let mut result = self.post("/Config/WriteDN", &payload);
+        if !self.validate_result(&mut result) {
+            return false
+        }
+        true
+    }
+        
     // This code kept getting repeated so lets factor it out to its own fn.
     fn validate_result(&self, res: &mut Response) -> bool {
         // Return true if status is successful, print error and return false

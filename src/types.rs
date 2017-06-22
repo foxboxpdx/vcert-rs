@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use openssl::pkcs12::Pkcs12;
 
 // JSON-based config file containing folder and cert authority names
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct ZerdaConfig {
     pub kind: String,
     pub folders: HashMap<String, String>,
-    pub certauthorities: HashMap<String, String>
+    pub certauthorities: HashMap<String, String>,
+    pub f5basedns: HashMap<String, String>,
+    pub f5params: HashMap<String, String>
 }
 
 // I'm way too lazy to deal with figuring out a way to return a P12 and its
@@ -37,6 +39,36 @@ pub struct CertificateRequest {
     pub objectname: Option<String>,
     #[serde(rename="PKCS10")]
     pub pkcs10: Option<String>
+}
+
+// Outbound app creation request
+#[derive(Serialize)]
+pub struct CreateAppRequest {
+    #[serde(rename="ObjectDN")]
+    pub objectdn: String,
+    #[serde(rename="Class")]
+    pub class: String,
+    #[serde(rename="NameAttributeList")]
+    pub nal: Vec<NameAttrib>
+}
+
+#[derive(Serialize)]
+pub struct NameAttrib {
+    #[serde(rename="Name")]
+    pub name: String,
+    #[serde(rename="Value")]
+    pub value: String
+}
+
+// Outbound request to /Config/WriteDN
+#[derive(Serialize)]
+pub struct WriteDNRequest {
+    #[serde(rename="ObjectDN")]
+    pub objectdn: String,
+    #[serde(rename="AttributeName")]
+    pub attrib: String,
+    #[serde(rename="Values")]
+    pub values: Vec<String>
 }
 
 // JSON-defined list of certificates

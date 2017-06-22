@@ -14,7 +14,7 @@ fn main() {
     let user = env::var("VENUSER").unwrap();
     let pass = env::var("VENPASS").unwrap();
     let host = env::var("VENHOST").unwrap();
-    let mut api = VenafiAPI::new(&user, &pass, &host);
+    //let mut api = VenafiAPI::new(&user, &pass, &host);
 
     // Read the config
     let mut config = String::new();
@@ -22,8 +22,9 @@ fn main() {
     f.read_to_string(&mut config).expect("Unable to read file");
     let settings: ZerdaConfig = serde_json::from_str(&config)
         .expect("Error parsing JSON");
-    api.cadns = settings.certauthorities;
-    api.folders = settings.folders;
+
+    // Make the API
+    let mut api = VenafiAPI::new(&user, &pass, &host, settings);
 
     api.authenticate();
 

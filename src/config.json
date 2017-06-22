@@ -1,13 +1,25 @@
 {
-  "kind" : "zerda:VenafiConfig:v1",
-  "folders" : 
-    {
-      "internal" : "\\VED\\Policy\\Certificates\\Internal\\",
-      "external" : "\\VED\\Policy\\Certificates\\External\\"
-    },
-  "certauthorities" : 
-    {
-      "myca" : "\\VED\\Policy\\Certificate Authorities\\My CA"
-    }
+   "kind":"zerda:VenafiConfig:v1",
+   "folders":{
+      "internal":"\\VED\\Policy\\Certificates\\Internal\\",
+      "external":"\\VED\\Policy\\Certificates\\External\\"
+   },
+   "certauthorities":{
+      "myca":"\\VED\\Policy\\Certificate Authorities\\My CA"
+   },
+   "f5basedns":{
+      "left":"\\VED\\Policy\\Devices\\F5 Left",
+      "right":"\\VED\\Policy\\Devices\\F5 Right"
+   },
+   "f5params":{
+      "Config Sync":"1",
+      "Overwrite Certificate":"1",
+      "Provisioning To":"Active",
+      "SSL Profile Type":"Client",
+      "Partition":"Common",
+      "Parent SSL Profile Name":"clientssl",
+      "Virtual Server Name":"MyVip",
+      "Virtual Server Partition":"Common",
+      "Bundle Certificate":"1"
+   }
 }
-
