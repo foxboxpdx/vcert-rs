@@ -1,3 +1,6 @@
+// Backup of the original api.rs using Hyper and also back when I didn't
+// know squat about Rust
+
     // Define our own reusable GET/POST functions
     pub fn get(&self, uri: &str) -> Response {
         let ssl = NativeTlsClient::new().unwrap();
