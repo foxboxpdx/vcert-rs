@@ -1,2 +1,2 @@
-# zerda
-Rust interface for the Venafi TPP API
+# vcert-rs
+Rust implementation of the Venafi 'VCert' API

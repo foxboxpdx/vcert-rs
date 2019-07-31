@@ -1,16 +1,15 @@
 // Testing
-extern crate zerda;
+extern crate vcert_rs;
 extern crate serde;
 extern crate serde_json;
 
-use zerda::api::VenafiAPI;
-use zerda::types::*;
 use std::io::Read;
 use std::io::Write;
 use std::fs::File;
 use std::env;
 
 fn main() {
+	/*
     let user = env::var("VENUSER").unwrap();
     let pass = env::var("VENPASS").unwrap();
     let host = env::var("VENHOST").unwrap();
@@ -44,4 +43,5 @@ fn main() {
     // Test fetch_expiry
     let daysleft = api.fetch_expiry(&certdn);
     println!("Certificate {} expires in {} days", certdn, daysleft);
+    */
 }

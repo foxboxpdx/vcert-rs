@@ -1,387 +1,98 @@
 // Define a struct and implement functions on it for making various API calls
 // to the Venafi TPP.
-extern crate serde;
-extern crate serde_json;
-use hyper::Client;
-use hyper::net::HttpsConnector;
-use hyper_native_tls::NativeTlsClient;
-use hyper::client::Response;
-use hyper::header::*;
-use serde_json::Value;
-use types::*;
+use super::*;
 use std::collections::HashMap;
 use std::io::Read;
 use base64::decode;
-use utils;
-use openssl::pkcs12::Pkcs12;
-use time;
 
+// Define the API struct
 #[derive(Debug)]
 pub struct VenafiAPI {
-    username: String,
-    password: String,
-    hostname: String,
-    apikey: String,
-    config: ZerdaConfig
+	auth: Auth,
+	apikey: String,
+	config: Config
 }
 
+
 impl VenafiAPI {
-    pub fn new(u: &str, p: &str, h: &str, c: ZerdaConfig) -> VenafiAPI {
-        VenafiAPI { username: u.to_string(),
-                    password: p.to_string(),
-                    hostname: h.to_string(),
-                    apikey: String::new(),
-                    config: c }
-    }
-
-    // Define our own reusable GET/POST functions
-    pub fn get(&self, uri: &str) -> Response {
-        let ssl = NativeTlsClient::new().unwrap();
-        let connector = HttpsConnector::new(ssl);
-        let client = Client::with_connector(connector);
-        let full_uri = self.hostname.clone() + uri;
-        let headers = self.set_headers();
-        client.get(&full_uri).headers(headers).send().unwrap()
-    }
-
-    pub fn post<'a, T>(&self, uri: &str, payload: &T) -> Response where T: serde::Serialize {
-        let body = serde_json::to_string(&payload).unwrap();
-        let ssl = NativeTlsClient::new().unwrap();
-        let connector = HttpsConnector::new(ssl);
-        let client = Client::with_connector(connector);
-        let full_uri = self.hostname.clone() + uri;
-        let headers = self.set_headers();
-        client.post(&full_uri).body(&body).headers(headers).send().unwrap()
-    }
-
-    // Automatically set the content type header and the Venafi API Key header
-    pub fn set_headers(&self) -> Headers {
-        let mut headers = Headers::new();
-        headers.set(ContentType::json());
-        headers.set_raw("X-Venafi-Api-Key", vec!(self.apikey.clone().into_bytes()));
-        headers
-    }
-
-    // Call /Authorize/ and obtain an API key
-    // This is the only REST call that won't use self.post()
-    pub fn authenticate(&mut self) -> bool {
-        let mut payload = HashMap::new();
-        payload.insert("Username", self.username.as_str());
-        payload.insert("Password", self.password.as_str());
-        let body = serde_json::to_string(&payload).unwrap();
-        let uri = self.hostname.clone() + "/Authorize/";
-        let ssl = NativeTlsClient::new().unwrap();
-        let connector = HttpsConnector::new(ssl);
-        let client = Client::with_connector(connector);
-        //let client = Client::new();
-        let mut headers = Headers::new();
-        headers.set(ContentType::json());
-        match client.post(&uri).body(&body).headers(headers).send() {
-            Ok(mut res) => {
-                let mut body = String::new();
-                res.read_to_string(&mut body).expect("Error reading response");
-                let parsed: Value = serde_json::from_str(body.as_str()).expect("Can't parse response");
-                let key: String = parsed["APIKey"].as_str().unwrap().to_string();
-                self.apikey = key;
-                true
-            }
-            Err(e) => {
-                println!("Error authenticating: {}", e);
-                false
-            }
-        }
-    }
-
-    // Retrieve metadata for X509 Server Certificate objects available to the
-    // authenticated user
-    pub fn fetch_cert_metadata(&self) -> HashMap<String, String> {
-        // FindObjectsOfClass X509 Server Certificate
-        // Recursive = 1
-        // Process the returned JSON into an FOOC
-        // Iterate through FOOC.objects vector
-        // Grab DN and Name attributes, stick in HashMap
-        // return hashmap
-        let mut payload = HashMap::new();
-        payload.insert("Class", "X509 Server Certificate");
-        payload.insert("Recursive", "1");
-        let mut result = self.post("/Config/FindObjectsOfClass", &payload);
-        // Result should be able to be turned into a FOOC struct
-        // Sanity check the result and return an empty HashMap on error
-        if !self.validate_result(&mut result) {
-            return HashMap::new()
-        }
-        let mut body = String::new();
-        result.read_to_string(&mut body).expect("Error reading response");
-        let parsed: FOOC = serde_json::from_str(&body).expect("Error converting JSON");
-        let mut retval = HashMap::new();
-        for x in &parsed.objects {
-            retval.insert(x.dn.clone(), x.name.clone());
-        }
-        retval
-    }
-
-    // Attempt to retrieve a PKCS#12 certificate with random password.
-    pub fn fetch_certificate(&self, dn: &str) -> P12Bundle {
-        // Generate password string
-        let pass = utils::generate_pass();
-        // Construct payload: CertificateDN, Format, IncludeChain,
-        // IncludePrivateKey, Password.
-        let mut payload = HashMap::new();
-        payload.insert("CertificateDN", dn);
-        payload.insert("Format", "PKCS #12");
-        payload.insert("IncludeChain", "1");
-        payload.insert("IncludePrivateKey", "1");
-        payload.insert("Password", &pass);
-        // Post to /certificates/Retrieve
-        let mut result = self.post("/certificates/Retrieve", &payload);
-        if !self.validate_result(&mut result) {
-            panic!("Certificate cannot be retrieved");
-        }
-        let mut body = String::new();
-        result.read_to_string(&mut body).expect("Error reading response");
-        let parsed: RetrievedCert = serde_json::from_str(&body).expect("Error converting JSON");
-        // Parse out RetrievedCert struct and data attribute
-        // Base64 decode it?
-        let decoded = decode(&parsed.data).expect("Unable to base64 decode");
-        let pk12 = Pkcs12::from_der(&decoded).expect("Bad p12?");
-        let retval = P12Bundle { p12: pk12, pwd: pass.clone() };
-        retval
-    }
-
-    // Fetch the cert and extract the 'not_after' attribute.  Need to look
-    // up how to manipulate OpenSSL structs.
-    pub fn fetch_expiry(&self, dn: &str) -> i64 {
-        // Grab the cert/pass using fetch_certificate
-        let certdata = self.fetch_certificate(dn);
-        let parsed = certdata.p12.parse(&certdata.pwd).expect("Bad password?");
-        let notafter: String = format!("{}", &parsed.cert.not_after());
-        let t = time::strptime(&notafter, "%b %d %T %Y %Z").expect("Invalid time format");
-        let diff = t - time::now();
-        diff.num_days()
-    }
-
-    // Request a new certificate.  Takes a subject, san list (can be empty),
-    // name of a certificate authority, and name of a folder/policydn
-    pub fn request_certificate(&self, sub: &str, san: &[String], ca: &str, f: &str) -> bool {
-        // Sanity check CA and folder names
-        if !self.config.certauthorities.contains_key(ca) {
-            println!("No CA DN found for CA name {}", ca);
-            return false
-        }
-        if !self.config.folders.contains_key(f) {
-            println!("No policy DN found for folder name {}", f);
-            return false
-        }
-        // Prep CASpecificAttributes hashmap
-        let csa: HashMap<String, String> = 
-            [("Name".to_string(), "Validity Period".to_string()),
-             ("Value".to_string(), "365".to_string())]
-            .iter().cloned().collect();
-        let mut csav = Vec::new();
-        csav.push(csa);
-
-        // Create a CertificateRequest struct with our available data
-        let mut payload = CertificateRequest {
-            policydn:   self.config.folders.get(f).unwrap().to_owned(),
-            cadn:       self.config.certauthorities.get(ca).unwrap().to_owned(),
-            specific:   csav,
-            subject:    Some(sub.to_string()),
-            objectname: None,
-            pkcs10:     None,
-            san:        None,
-        };
-        let mut sans = Vec::new();
-        for s in san {
-            let typename: HashMap<String, String> =
-                [("Type".to_string(), "2".to_string()),
-                 ("Name".to_string(), s.to_string())]
-                .iter().cloned().collect();
-            sans.push(typename);
-        }
-        // Stuff into payload if needed
-        if sans.len() > 1 {
-            payload.san = Some(sans);
-        }
-
-        let mut result = self.post("/Certificates/Request", &payload);
-        if self.validate_result(&mut result) {
-            println!("Successfully requested {}", sub);
-            true
-        } else {
-            false
-        }
-    }
-
-    // Do a request but with a CSR instead of subj/san.  Takes a name, csr,
-    // cert authority, and folder name
-    pub fn request_with_csr(&self, name: &str, csr: &str, ca: &str, f: &str) -> bool {
-        // Sanity check CA and folder names
-        if !self.config.certauthorities.contains_key(ca) {
-            println!("No CA DN found for CA name {}", ca);
-            return false
-        }
-        if !self.config.folders.contains_key(f) {
-            println!("No policy DN found for folder name {}", f);
-            return false
-        }
-        // Prep CASpecificAttributes hashmap
-        let csa: HashMap<String, String> =
-            [("Name".to_string(), "Validity Period".to_string()),
-             ("Value".to_string(), "365".to_string())]
-            .iter().cloned().collect();
-        let mut csav = Vec::new();
-        csav.push(csa);
-
-        // Create a CertificateRequest struct with available data
-        let payload = CertificateRequest {
-            policydn:   self.config.folders.get(f).unwrap().to_owned(),
-            cadn:       self.config.certauthorities.get(ca).unwrap().to_owned(),
-            specific:   csav,
-            subject:    None,
-            objectname: Some(name.to_string()),
-            pkcs10:     Some(csr.to_string()),
-            san:        None
-        };
-        let mut result = self.post("/Certificates/Request", &payload);
-        if self.validate_result(&mut result) {
-            println!("Successfully requested {}", name);
-            true
-        } else {
-            false
-        }
-    }
-
-    // Send a renewal request given the DN of a certificate
-    pub fn renew_certificate(&self, dn: &str) -> bool {
-        let mut payload = HashMap::new();
-        payload.insert("CertificateDN", &dn);
-        let mut result = self.post("/Certificates/Renew", &payload);
-        if self.validate_result(&mut result) {
-            println!("Successfully submitted renewal request for {}", dn);
-            true
-        } else {
-            false
-        }
-    }
-
-    // Send a revoke request given the DN of a certificate
-    pub fn revoke_certificate(&self, dn: &str) -> bool {
-        let mut payload = HashMap::new();
-        payload.insert("CertificateDN", dn);
-        payload.insert("Reason", "5");
-        payload.insert("Comments", "Revoked via API");
-        let mut result = self.post("/Certificates/Revoke", &payload);
-        if self.validate_result(&mut result) {
-            println!("Successfully submitted revoke request for {}", dn);
-            true
-        } else {
-            return false
-        }
-    }
-
-    // Determine the revocation status of a certificate. Takes cert DN.
-    pub fn check_revoked(&self, dn: &str) -> bool {
-        // Two step process:
-        // 1. Obtain vaultID via /Config/Read
-        // 2. Obtain cert metadata via /X509CertificateStore/Retrieve
-        // If the array TypedNameValues contains a hash with the name
-        // 'Revocation Status' and a non-null value, certificate is revoked.
-        let mut payload = HashMap::new();
-        payload.insert("ObjectDN", dn);
-        payload.insert("AttributeName", "Certificate Vault Id");
-        let mut result = self.post("/Config/Read", &payload);
-        if !self.validate_result(&mut result) {
-            return false
-        }
-        let mut body = String::new();
-        result.read_to_string(&mut body).expect("Error reading response");
-        let mut parsed: ConfigRead = serde_json::from_str(&body).expect("Error converting JSON");
-        let vault_id = parsed.values.pop().unwrap();
-
-        let mut p2 = HashMap::new();
-        p2.insert("VaultId", vault_id.as_str());
-        result = self.post("/X509CertificateStore/Retreive", &p2);
-        if !self.validate_result(&mut result) {
-            return false
-        }
-        body = String::new();
-        result.read_to_string(&mut body).expect("Error reading response");
-        let daters: X509CertStore = serde_json::from_str(&body).expect("Error converting JSON");
-        for t in &daters.typednamevalues {
-            if t.name == "Revocation Status" && !t.value.is_empty() {
-                return true
-            }
-        }
-        false
-    }
-
-    // Create an F5 LTM Advanced object with supplied base parameters
-    fn create_f5_app(&self, appdn: &str, certdn: &str, name: &str) -> bool {
-        // Build the array of NameAttributes
-        let driver = NameAttrib { name: "Driver Name".to_string(), value: "appf5ltmadvanced".to_string() };
-        let desc   = NameAttrib { name: "Description".to_string(), value: name.to_string() };
-        let cert   = NameAttrib { name: "Certificate".to_string(), value: certdn.to_string() };
-        let prof   = NameAttrib { name: "SSL Profile Name".to_string(), value: name.to_string() };
-        let nal = vec![driver, desc, cert, prof];
-        // Shove it into a CreateAppRequest struct to send off
-        let payload = CreateAppRequest {
-            objectdn: appdn.to_string(),
-            class:    "F5 LTM Advanced".to_string(),
-            nal:      nal
-        };
-        let mut result = self.post("/Config/Create", &payload);
-        if !self.validate_result(&mut result) {
-            return false
-        }
-        true
-    }
-
-    // Set additional parameters on an application object
-    fn add_app_params(&self, appdn: &str, params: &HashMap<String, String>) -> bool {
-        // Iterate through the params hash and call AddValue for each
-        for (k, v) in params {
-            let mut payload = HashMap::new();
-            payload.insert("ObjectDN", appdn);
-            payload.insert("AttributeName", k);
-            payload.insert("Value", v);
-            let mut result = self.post("/Config/AddValue", &payload);
-            if !self.validate_result(&mut result) {
-                return false
-            }
-        }
-        true
-    }
-
-    // Trigger a provisioning action on an application object
-    fn execute_app(&self, appdn: &str) -> bool {
-        // Need a vec
-        let values = vec![ "1".to_string() ];
-        // Need a request
-        let payload = WriteDNRequest {
-            objectdn: appdn.to_string(),
-            attrib: "Provisioning Work To Do".to_string(),
-            values: values
-        };
-        // Send it
-        let mut result = self.post("/Config/WriteDN", &payload);
-        if !self.validate_result(&mut result) {
-            return false
-        }
-        true
-    }
-        
-    // This code kept getting repeated so lets factor it out to its own fn.
-    fn validate_result(&self, res: &mut Response) -> bool {
-        // Return true if status is successful, print error and return false
-        // otherwise.
-        if res.status.is_success() {
-            true
-        } else {
-            let stat = res.status;
-            let mut why = String::new();
-            res.read_to_string(&mut why).expect("Can't read response?");
-            println!("Received error {}: {:?}", stat, why);
-            false
-        }
-    }
+	
+	// Authenticate to receive the API Key necessary for all operations
+	// Returns Ok(()) and sets self.apikey on success; Err(String) on
+	// failure.
+	pub fn get_api_key(&self) -> Result<(), String> {
+		Ok(())
+		
+	}
+	
+	// Retrieve metadata for X509 Server Certificates available to the
+	// authenticated user.  Uses contents of self.config.folders to
+	// determine which top-level policyDNs to query.
+	pub fn fetch_cert_metadata(&self) -> Result<HashMap<String, String>, String> {
+		Ok(HashMap::new())
+		
+	}
+	
+	// Attempt to retrieve a certificate given the full DN of the cert
+	// object, in the specified format, with flags for including the
+	// Chain and/or the PrivKey.  A random password is generated in the
+	// latter case, as one is required for encrypting the PKey.
+	// Returns a tuple of the Base64 decoded cert and its password (if 
+	// any) on success, or an Err(String, String) on failure containing
+	// the HTTP code and an error message for callers to handle.
+	pub fn fetch_certificate(&self, dn: &str, fmt: &str, ch: bool, pkey: bool) -> 
+		Result<(String, String), (i32, String)> {
+			
+		Ok(("foo".to_string(), "bar".to_string()))
+	}
+	
+	// Attempt to retrieve the expiration date of a certificate given
+	// the full DN of the cert object.  Returns a String containing the
+	// date on success, or an Err(String) containing an error message
+	// on failure.
+	pub fn fetch_expiry(&self, dn: &str) -> Result<String, String> {
+		Ok("foo".to_string())
+		
+	}
+	
+	// Attempt to request a new certificate given a Subject, an optional
+	// Vec of SubjectAlternativeNames, a Certificate Authority matching
+	// one of those defined in self.config, and a folder (aka PolicyDN)
+	// matching one of those defined in self.config.  Returns a String
+	// representing the CertificateDN of the newly-created cert on 
+	// success, or an Err(String) with a failure reason on failure.
+	pub fn request_certificate(&self, subj: &str, san: Vec<&str>, ca: &str, pdn: &str) -> Result<String, String> {
+		Ok("foo".to_string())
+		
+	}
+	
+	// Attempt to request a new certificate given a CSR (PKCS#10), and a
+	// Certificate Authority and PolicyDN as defined in self.config.
+	// Returns a String representing the CertificateDN of the newly-
+	// created cert on success, or an Err(String) with a reason on failure.
+	pub fn request_with_csr(&self, csr: &str, ca: &str, pdn: &str) -> Result<String, String> {
+		Ok("foo".to_string())
+		
+	}
+	
+	// Attempt to renew an existing certificate, given its full DN.
+	// Returns Ok(()) on success and Err(String) on failure.
+	pub fn renew_certificate(&self, dn: &str) -> Result<(), String> {
+		Ok(())
+		
+	}
+	
+	// Attempt to revoke an existing certificate, given its full DN.
+	// Returns Ok() on success, Err(String) on failure.
+	pub fn revoke_certificate(&self, dn: &str) -> Result<(), String> {
+		Ok(())
+		
+	}
+	
+	// Check the revocation status of an existing certificate, given its
+	// full DN.  Returns a bool indicating whether the cert has been
+	// revoked or not, or an Err(String) with a failure reason.
+	pub fn is_revoked(&self, dn: &str) -> Result<bool, String> {
+		Ok(true)
+		
+	}
 }
