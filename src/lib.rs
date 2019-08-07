@@ -1,4 +1,5 @@
 // External imports
+extern crate reqwest;
 extern crate serde;
 extern crate serde_json;
 extern crate rand;
@@ -49,6 +50,14 @@ pub struct CertificateRequest {
     pub csr: Option<String>
 }
 
+// Response from a call to Authorize
+#[derive(Deserialize)]
+pub struct VenafiAuth {
+	#[serde(rename="APIKey")]
+	pub apikey: String,
+	#[serde(rename="ValidUntil")]
+	pub validuntil: String
+}
 
 // JSON-defined list of certificates
 #[derive(Deserialize)]
