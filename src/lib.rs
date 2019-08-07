@@ -18,7 +18,6 @@ use std::collections::HashMap;
 // JSON-based config file containing folder and cert authority names
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    pub kind: String,
     pub folders: HashMap<String, String>,
     pub certauthorities: HashMap<String, String>
 }
